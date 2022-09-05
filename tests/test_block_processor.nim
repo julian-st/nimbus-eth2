@@ -39,10 +39,10 @@ suite "Block processor" & preset():
       verifier = BatchVerifier(rng: keys.newRng(), taskpool: taskpool)
       quarantine = newClone(Quarantine.init())
       attestationPool = newClone(AttestationPool.init(dag, quarantine))
-      eth1Monitor = new Eth1Monitor
+      elManager = new ELManager # TODO: initialise this properly
       keymanagerHost: ref KeymanagerHost
       consensusManager = ConsensusManager.new(
-        dag, attestationPool, quarantine, eth1Monitor,
+        dag, attestationPool, quarantine, elManager,
         newClone(DynamicFeeRecipientsStore.init()), keymanagerHost,
         default(Eth1Address))
       state = newClone(dag.headState)

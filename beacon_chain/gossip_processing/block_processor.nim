@@ -17,8 +17,8 @@ import
   ../sszdump
 
 from ../consensus_object_pools/consensus_manager import
-  ConsensusManager, optimisticExecutionPayloadHash, runForkchoiceUpdated,
-  runForkchoiceUpdatedDiscardResult, runProposalForkchoiceUpdated,
+  ConsensusManager, optimisticExecutionPayloadHash,
+  runProposalForkchoiceUpdated,
   shouldSyncOptimistically, updateHead, updateHeadWithExecution
 from ../beacon_clock import GetBeaconTimeFn, toFloatSeconds
 from ../consensus_object_pools/block_dag import BlockRef, root, slot
@@ -171,14 +171,15 @@ proc storeBackfillBlock(
 
 from web3/engine_api_types import PayloadExecutionStatus, PayloadStatusV1
 from ../eth1/eth1_monitor import
-  Eth1Monitor, asEngineExecutionPayload, ensureDataProvider, newPayload
+  ELManager, asEngineExecutionPayload, sendNewPayload,
+  forkchoiceUpdated, forkchoiceUpdatedNoResult
 
 proc expectValidForkchoiceUpdated(
-    eth1Monitor: Eth1Monitor,
-    headBlockRoot, safeBlockRoot, finalizedBlockRoot: Eth2Digest
-): Future[void] {.async.} =
+    elManager: ELManager,
+    headBlockRoot, safeBlockRoot,
+    finalizedBlockRoot: Eth2Digest): Future[void] {.async.} =
   let payloadExecutionStatus =
-    await eth1Monitor.runForkchoiceUpdated(
+    await elManager.forkchoiceUpdated(
       headBlockRoot, safeBlockRoot, finalizedBlockRoot)
   if payloadExecutionStatus != PayloadExecutionStatus.valid:
     # Only called when expecting this to be valid because `newPayload` or some
@@ -295,7 +296,7 @@ proc storeBlock*(
         wallSlot.start_beacon_time)
 
   if newHead.isOk:
-    template eth1Monitor(): auto = self.consensusManager.eth1Monitor
+    template elManager(): auto = self.consensusManager.elManager
     if self.consensusManager[].shouldSyncOptimistically(wallSlot):
       # Optimistic head is far in the future; report it as head block to EL.
 
@@ -313,10 +314,10 @@ proc storeBlock*(
       # - "Beacon chain gapped" from DAG head to optimistic head,
       # - followed by "Beacon chain reorged" from optimistic head back to DAG.
       self.consensusManager[].updateHead(newHead.get.blck)
-      asyncSpawn eth1Monitor.runForkchoiceUpdatedDiscardResult(
-        headBlockRoot = self.consensusManager[].optimisticExecutionPayloadHash,
-        safeBlockRoot = newHead.get.safeExecutionPayloadHash,
-        finalizedBlockRoot = newHead.get.finalizedExecutionPayloadHash)
+      asyncSpawn elManager.forkchoiceUpdatedNoResult(
+        headBlock = self.consensusManager[].optimisticExecutionPayloadHash,
+        safeBlock = newHead.get.safeExecutionPayloadHash,
+        finalizedBlock = newHead.get.finalizedExecutionPayloadHash)
     else:
       let headExecutionPayloadHash =
         self.consensusManager.dag.loadExecutionBlockRoot(newHead.get.blck)
@@ -328,7 +329,7 @@ proc storeBlock*(
         # be selected as head, so `VALID`. `forkchoiceUpdated` necessary for EL
         # client only.
         self.consensusManager[].updateHead(newHead.get.blck)
-        asyncSpawn eth1Monitor.expectValidForkchoiceUpdated(
+        asyncSpawn elManager.expectValidForkchoiceUpdated(
           headBlockRoot = headExecutionPayloadHash,
           safeBlockRoot = newHead.get.safeExecutionPayloadHash,
           finalizedBlockRoot = newHead.get.finalizedExecutionPayloadHash)
@@ -425,11 +426,9 @@ from eth/async_utils import awaitWithTimeout
 from ../spec/datatypes/bellatrix import ExecutionPayload, SignedBeaconBlock
 
 proc newExecutionPayload*(
-    eth1Monitor: Eth1Monitor, executionPayload: bellatrix.ExecutionPayload):
+    elManager: ELManager,
+    executionPayload: bellatrix.ExecutionPayload):
     Future[Opt[PayloadExecutionStatus]] {.async.} =
-  if eth1Monitor.isNil:
-    warn "newPayload: attempting to process execution payload without Eth1Monitor. Ensure --web3-url setting is correct and JWT is configured."
-    return Opt.none PayloadExecutionStatus
 
   debug "newPayload: inserting block into execution engine",
     parentHash = executionPayload.parent_hash,
@@ -446,19 +445,8 @@ proc newExecutionPayload*(
     numTransactions = executionPayload.transactions.len
 
   try:
-    let
-      payloadResponse =
-        awaitWithTimeout(
-            eth1Monitor.newPayload(
-              executionPayload.asEngineExecutionPayload),
-            NEWPAYLOAD_TIMEOUT):
-          info "newPayload: newPayload timed out"
-          return Opt.none PayloadExecutionStatus
-
-          # Placeholder for type system
-          PayloadStatusV1(status: PayloadExecutionStatus.syncing)
-
-      payloadStatus = payloadResponse.status
+    let payloadStatus = await elManager.sendNewPayload(
+      executionPayload.asEngineExecutionPayload)
 
     debug "newPayload: succeeded",
       parentHash = executionPayload.parent_hash,
@@ -525,7 +513,7 @@ proc runQueueProcessingLoop*(self: ref BlockProcessor) {.async.} =
       executionPayloadStatus =
        if hasExecutionPayload:
          # Eth1 syncing is asynchronous from this
-         # TODO self.consensusManager.eth1Monitor.terminalBlockHash.isSome
+         # TODO self.consensusManager.elManager.terminalBlockHash.isSome
          # should gate this when it works more reliably
          # TODO detect have-TTD-but-not-is_execution_block case, and where
          # execution payload was non-zero when TTD detection more reliable
@@ -542,9 +530,6 @@ proc runQueueProcessingLoop*(self: ref BlockProcessor) {.async.} =
                blck.src, blck.blck, blck.resfut, blck.validationDur)
 
            try:
-             # Minimize window for Eth1 monitor to shut down connection
-             await self.consensusManager.eth1Monitor.ensureDataProvider()
-
              let executionPayload =
                withBlck(blck.blck):
                  when stateFork >= BeaconStateFork.Bellatrix:
@@ -554,7 +539,7 @@ proc runQueueProcessingLoop*(self: ref BlockProcessor) {.async.} =
                    default(bellatrix.ExecutionPayload) # satisfy Nim
 
              let executionPayloadStatus = await newExecutionPayload(
-               self.consensusManager.eth1Monitor, executionPayload)
+               self.consensusManager.elManager, executionPayload)
              if executionPayloadStatus.isNone:
                reEnqueueBlock()
                continue
