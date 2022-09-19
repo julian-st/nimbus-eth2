@@ -275,11 +275,9 @@ proc getRuntimeConfig*(
   ## regular Nimbus binary, returning the mainnet config.
   ##
   ## TODO the assumption that the input variable is a CLI config option is not
-  ## quite appropriate in such as low-level function. Usagege of this function
-  ## can be replaced with `getMetadataForNetwork(eth2Network.get).cfg` which
-  ## will force them to handle explicitly the case where a network is not
-  ## specified. The "assume mainnet by default" behavior is something that
-  ## should be handled closer to the `conf` layer.
+  ## quite appropriate in such as low-level function. The "assume mainnet by
+  ## default" behavior is something that should be handled closer to the `conf`
+  ## layer.
   if eth2Network.isSome:
     return getMetadataForNetwork(eth2Network.get).cfg
 
