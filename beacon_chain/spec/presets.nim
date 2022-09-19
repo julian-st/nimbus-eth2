@@ -153,7 +153,7 @@ when const_preset == "mainnet":
 
     # Altair
     ALTAIR_FORK_VERSION: Version [byte 0x01, 0x00, 0x00, 0x00],
-    ALTAIR_FORK_EPOCH: Epoch(uint64.high), # Oct 27, 2021, 10:56:23am UTC
+    ALTAIR_FORK_EPOCH: Epoch(uint64.high),
     # Bellatrix
     BELLATRIX_FORK_VERSION: Version [byte 0x02, 0x00, 0x00, 0x00],
     BELLATRIX_FORK_EPOCH: Epoch(uint64.high),
